@@ -1,0 +1,90 @@
+name: Update Products Data
+
+on:
+  schedule:
+    # يشتغل كل ساعتين
+    - cron: '0 */2 * * *'
+
+  # يخليك تقدر تشغله يدوي من GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install psycopg2-binary
+
+      - name: Fetch data from Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          python << 'EOF'
+          import os
+          import psycopg2
+          import json
+          from datetime import datetime
+
+          # الاتصال بقاعدة البيانات
+          conn = psycopg2.connect(os.getenv('SUPABASE_URL'))
+          cur = conn.cursor()
+
+          # جلب البيانات
+          query = """
+              SELECT
+                  name,
+                  current_price,
+                  category,
+                  url,
+                  last_updated,
+                  CASE
+                      WHEN is_deleted THEN 'محذوف'
+                      WHEN is_out_of_stock THEN 'نافد'
+                      WHEN is_hidden THEN 'مخفي'
+                      ELSE 'متوفر'
+                  END as status
+              FROM products
+              ORDER BY last_updated DESC NULLS LAST
+          """
+
+          cur.execute(query)
+          rows = cur.fetchall()
+          cols = [desc[0] for desc in cur.description]
+
+          # تحويل النتائج لـ JSON
+          result = []
+          for row in rows:
+              product = dict(zip(cols, row))
+              # تحويل datetime لـ string
+              if product['last_updated']:
+                  product['last_updated'] = product['last_updated'].isoformat()
+              result.append(product)
+
+          # حفظ في ملف JSON
+          with open('products.json', 'w', encoding='utf-8') as f:
+              json.dump(result, f, ensure_ascii=False, indent=2)
+
+          # طباعة الإحصائيات
+          print(f"✅ تم جلب {len(result)} منتج بنجاح")
+          print(f"⏰ آخر تحديث: {datetime.now().isoformat()}")
+
+          cur.close()
+          conn.close()
+          EOF
+
+      - name: Commit and Push changes
+        run: |
+          git config --global user.name 'GitHub Action'
+          git config --global user.email 'action@github.com'
+          git add products.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🔄 تحديث تلقائي للبيانات - $(date +'%Y-%m-%d %H:%M')" && git push)
